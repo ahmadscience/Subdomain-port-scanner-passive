@@ -10,13 +10,20 @@ set -euo pipefail
 # ============================================================
 # COLORS
 # ============================================================
+VERSION="2.1.0"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
+DIM='\033[2m'
 NC='\033[0m'
+
+disable_colors() { RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; BOLD=''; DIM=''; NC=''; }
+# Honour NO_COLOR (https://no-color.org) and non-TTY output
+if [[ -n "${NO_COLOR:-}" || ! -t 1 ]]; then disable_colors; fi
 
 # ============================================================
 # DEFAULTS (all overridable via CLI flags)
@@ -564,7 +571,7 @@ discover_subdomains() {
     local tmpdir
     tmpdir=$(mktemp -d)
 
-    log_info "Running subdomain discovery across all sources in parallel..."
+    log_info "[1/3] Discovering subdomains across all sources in parallel..."
     spinner_start "Querying sources"
 
     # Free sources — always run
@@ -624,7 +631,7 @@ resolve_ips() {
 
     local total
     total=$(wc -l < "$subdomains_file" | tr -d ' ')
-    log_info "Resolving ${total} subdomains (${THREADS} threads)..."
+    log_info "[2/3] Resolving ${total} subdomains (${THREADS} threads)..."
 
     > "$output_file"
     init_job_pool "$THREADS"
@@ -763,7 +770,7 @@ get_port_info() {
 
     local total
     total=$(wc -l < "$ips_file" | tr -d ' ')
-    log_info "Querying port data for ${total} IPs (${THREADS} threads)..."
+    log_info "[3/3] Querying port data (InternetDB) for ${total} IPs (${THREADS} threads)..."
 
     printf 'Subdomain,IP,Ports,Hostnames,Tags,Vulns,CPEs\n' > "$output_file"
 
@@ -975,7 +982,7 @@ create_summary() {
 # USAGE
 # ============================================================
 usage() {
-    cat << EOF
+    printf '%b\n' "$(cat << EOF
 ${BOLD}subdomain_scanner.sh${NC} — Passive Subdomain Discovery & Port Reconnaissance
 
 ${BOLD}Usage:${NC}
@@ -992,6 +999,8 @@ ${BOLD}Options:${NC}
   -p, --proxy URL        HTTP/HTTPS proxy for all outbound requests
   -C, --no-cache         Disable result caching
   -k, --keys FILE        Path to API keys config file
+  -c, --no-color         Disable colored output (also honours NO_COLOR)
+  -V, --version          Show version and exit
   -h, --help             Show this help
 
 ${BOLD}Free subdomain sources (always active):${NC}
@@ -1015,6 +1024,7 @@ ${BOLD}Examples:${NC}
   $0 -k ~/.config/subdomain_scanner/keys.conf -f all example.com
   $0 -p http://127.0.0.1:8080 example.com
 EOF
+)"
 }
 
 # ============================================================
@@ -1034,6 +1044,8 @@ parse_args() {
             --quiet)    args+=("-q") ;;
             --proxy)    args+=("-p") ;;
             --no-cache) args+=("-C") ;;
+            --no-color) args+=("-c") ;;
+            --version)  args+=("-V") ;;
             --keys)     args+=("-k") ;;
             --help)     args+=("-h") ;;
             *)          args+=("$arg") ;;
@@ -1041,7 +1053,7 @@ parse_args() {
     done
     set -- "${args[@]}"
 
-    while getopts ":o:n:T:d:f:vqp:Ck:h" opt; do
+    while getopts ":o:n:T:d:f:vqp:Cck:hV" opt; do
         case "$opt" in
             o) OUTPUT_DIR="$OPTARG" ;;
             n) THREADS="$OPTARG" ;;
@@ -1052,6 +1064,8 @@ parse_args() {
             q) QUIET=1 ;;
             p) CURL_PROXY="$OPTARG" ;;
             C) NO_CACHE=1 ;;
+            c) disable_colors ;;
+            V) printf 'subdomain_scanner.sh %s\n' "$VERSION"; exit 0 ;;
             k) API_KEYS_FILE="$OPTARG" ;;
             h) usage; exit 0 ;;
             :) log_error "Option -$OPTARG requires an argument"; usage; exit 1 ;;
@@ -1103,13 +1117,16 @@ main() {
     local json_tmpdir
     json_tmpdir=$(mktemp -d)
 
-    printf '\n'
-    log_info "Starting passive reconnaissance for: ${BOLD}${DOMAIN}${NC}"
-    log_info "Output directory : $OUTPUT_DIR"
-    log_info "Threads          : $THREADS"
-    log_info "Format           : $OUTPUT_FORMAT"
-    [[ -n "$CURL_PROXY" ]] && log_info "Proxy: $CURL_PROXY"
-    printf '\n'
+    if [[ "$QUIET" -eq 0 ]]; then
+        printf '\n%b  subdomain_scanner v%s%b %b— passive recon, no packets sent to the target%b\n' \
+            "$BOLD" "$VERSION" "$NC" "$DIM" "$NC"
+        printf '  %b%s%b\n\n' "$DIM" "────────────────────────────────────────────────────────" "$NC"
+        printf '  %-11s %b%s%b\n' "Target"  "$BOLD" "$DOMAIN" "$NC"
+        printf '  %-11s %s\n' "Output"  "$OUTPUT_DIR"
+        printf '  %-11s %s   %-8s %s\n' "Threads" "$THREADS" "Format" "$OUTPUT_FORMAT"
+        [[ -n "$CURL_PROXY" ]] && printf '  %-11s %s\n' "Proxy" "$CURL_PROXY"
+        printf '\n'
+    fi
 
     local subdomains_file="${OUTPUT_DIR}/subdomains.txt"
     local ips_file="${OUTPUT_DIR}/subdomains_with_ips.csv"
@@ -1161,24 +1178,25 @@ main() {
 
     # Final report
     local duration=$(( $(get_now) - SCAN_START_TIME ))
+    local n_sub=0 n_ip=0 n_cve=0
+    [[ -f "$subdomains_file" ]] && n_sub=$(wc -l < "$subdomains_file" | tr -d ' ')
+    [[ -f "$ips_file" ]]        && n_ip=$(wc -l < "$ips_file" | tr -d ' ')
+    [[ -f "$ports_file" ]]      && n_cve=$(grep -o 'CVE-[0-9]*-[0-9]*' "$ports_file" 2>/dev/null | sort -u | wc -l | tr -d ' ')
     printf '\n'
     log_ok "Reconnaissance complete in ${duration}s"
-    printf '\n'
-    printf '%bResults:%b %s\n' "$BOLD" "$NC" "$OUTPUT_DIR"
-    [[ -f "$subdomains_file" ]] && printf '  %-30s (%s subdomains)\n' "subdomains.txt"          "$(wc -l < "$subdomains_file" | tr -d ' ')"
-    [[ -f "$ips_file" ]]        && printf '  %-30s (%s resolved)\n'   "subdomains_with_ips.csv" "$(wc -l < "$ips_file" | tr -d ' ')"
-    [[ -f "$ports_file" ]]      && printf '  %-30s\n' "ports_and_services.csv"
-    [[ -f "$summary_file" ]]    && printf '  %-30s\n' "summary.md"
-    [[ -f "$json_file" ]]       && printf '  %-30s\n' "results.json"
-    printf '  %-30s\n' "scan.log"
-
-    if [[ -f "$ports_file" ]]; then
-        local vuln_count
-        vuln_count=$(grep -c 'CVE-' "$ports_file" 2>/dev/null | tr -d ' ' || printf '0')
-        if (( vuln_count > 0 )); then
-            printf '\n'
-            log_warn "Potential vulnerabilities detected in ${vuln_count} entries — review ports_and_services.csv"
-        fi
+    printf '\n%bSummary%b\n' "$BOLD" "$NC"
+    printf '  %-22s %s\n' "Subdomains found"   "$n_sub"
+    printf '  %-22s %s\n' "Resolved hosts"     "$n_ip"
+    printf '  %-22s %s\n' "Sources with data"  "${#SOURCES_USED[@]}"
+    printf '  %-22s %s\n' "Unique CVEs"        "$n_cve"
+    printf '\n%bFiles%b  %s\n' "$BOLD" "$NC" "$OUTPUT_DIR"
+    local f
+    for f in subdomains.txt subdomains_with_ips.csv ports_and_services.csv summary.md results.json scan.log; do
+        [[ -f "${OUTPUT_DIR}/${f}" ]] && printf '  %b•%b %s\n' "$DIM" "$NC" "$f"
+    done
+    if (( n_cve > 0 )); then
+        printf '\n'
+        log_warn "${n_cve} unique CVE(s) reported by InternetDB — review ports_and_services.csv"
     fi
 }
 
