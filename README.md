@@ -7,7 +7,7 @@ A fsat tool for recon when you can not run port scan or brute force sub domains.
 
 ## 🚀 Features
 
-- **🔒 Certificate Transparency Discovery**: Uses crt.sh and AnubisDB to find subdomains from SSL certificate logs
+- **🔒 Certificate Transparency Discovery**: Uses crt.sh, crt.name and AnubisDB to find subdomains from SSL certificate logs
 - **🌐 DNS Resolution**: Resolves all discovered subdomains to IP addresses
 - **🔓 Port Enumeration**: Leverages Shodan's free InternetDB for open port discovery
 - **🛡️ Vulnerability Detection**: Identifies known CVEs associated with discovered services
@@ -99,7 +99,7 @@ Quick Stats:
 
 ## 🔧 How It Works
 
-1. **Certificate Transparency**: Queries crt.sh for SSL certificate logs
+1. **Certificate Transparency**: Queries crt.sh and crt.name for SSL certificate logs
 2. **DNS Resolution**: Uses `dig` to resolve subdomains to IP addresses
 3. **Port Discovery**: Leverages Shodan InternetDB for passive port enumeration
 4. **Data Enrichment**: Extracts hostnames, service tags, and vulnerability data
@@ -145,6 +145,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🙏 Acknowledgments
 
 - [crt.sh](https://crt.sh/) - Certificate Transparency log search
+- [crt.name](https://crt.name/) - Certificate Transparency subdomain search (free, 100 req/IP/day)
 - [Shodan InternetDB](https://internetdb.shodan.io/) - Free passive reconnaissance data
 - The cybersecurity community for continuous knowledge sharing
 

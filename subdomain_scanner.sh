@@ -405,6 +405,18 @@ discover_certsh() {
     log_debug "crt.sh: $(wc -l < "$outfile" | tr -d ' ') entries"
 }
 
+discover_crtname() {
+    local domain="$1" outfile="$2"
+    local response
+    response=$(curl_with_retry "https://crt.name/v1/search?apex=${domain}") || { > "$outfile"; return 0; }
+    printf '%s\n' "$response" \
+        | tr 'A-Z' 'a-z' \
+        | grep -E "^[a-z0-9._-]+$" \
+        | grep -v '^u003e' \
+        | sort -u > "$outfile" 2>/dev/null || true
+    log_debug "crt.name: $(wc -l < "$outfile" | tr -d ' ') entries"
+}
+
 discover_anubis() {
     local domain="$1" outfile="$2"
     local response
@@ -557,6 +569,7 @@ discover_subdomains() {
 
     # Free sources — always run
     discover_certsh       "$domain" "${tmpdir}/certsh.txt"       &
+    discover_crtname      "$domain" "${tmpdir}/crtname.txt"       &
     discover_anubis       "$domain" "${tmpdir}/anubis.txt"        &
     discover_hackertarget "$domain" "${tmpdir}/hackertarget.txt"  &
     discover_alienvault   "$domain" "${tmpdir}/alienvault.txt"    &
@@ -575,7 +588,7 @@ discover_subdomains() {
 
     # Track which sources produced results
     local src
-    for src in certsh anubis hackertarget alienvault bufferover urlscan wayback \
+    for src in certsh crtname anubis hackertarget alienvault bufferover urlscan wayback \
                 securitytrails virustotal censys binaryedge; do
         local f="${tmpdir}/${src}.txt"
         if [[ -f "$f" ]] && [[ -s "$f" ]]; then
@@ -982,7 +995,7 @@ ${BOLD}Options:${NC}
   -h, --help             Show this help
 
 ${BOLD}Free subdomain sources (always active):${NC}
-  crt.sh, AnubisDB, HackerTarget, AlienVault OTX,
+  crt.sh, crt.name, AnubisDB, HackerTarget, AlienVault OTX,
   BufferOver, URLScan.io, Wayback Machine CDX
 
 ${BOLD}API-key-enhanced sources (optional):${NC}
