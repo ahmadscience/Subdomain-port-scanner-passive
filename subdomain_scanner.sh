@@ -38,6 +38,7 @@ VERBOSE=0
 QUIET=0
 CURL_PROXY=""
 NO_CACHE=0
+DO_RDNS=1
 CACHE_TTL=86400
 API_KEYS_FILE="${HOME}/.config/subdomain_scanner/keys.conf"
 CACHE_DIR="${HOME}/.cache/subdomain_scanner"
@@ -441,6 +442,27 @@ discover_crtname() {
     log_debug "crt.name (apex ${apex}): $(wc -l < "$outfile" | tr -d ' ') entries"
 }
 
+# Extract hostnames from arbitrary text (robust to THC's text layout)
+extract_hostnames() {
+    sed $'s/\033\\[[0-9;]*m//g' \
+        | tr 'A-Z' 'a-z' \
+        | grep -oE '[a-z0-9]([a-z0-9_-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9_-]*[a-z0-9])?)+' \
+        | grep -E '\.[a-z]{2,}$' \
+        | sort -u
+}
+
+# ip.thc.org subdomain lookup (free, no key): https://ip.thc.org/docs/API/subdomain-lookup
+discover_thc() {
+    local domain="$1" outfile="$2"
+    local response
+    response=$(curl_with_retry "https://ip.thc.org/sb/${domain}?nocolor=1") || { > "$outfile"; return 0; }
+    printf '%s\n' "$response" \
+        | extract_hostnames \
+        | grep -E "(^|\.)${domain//./\\.}$" \
+        | sort -u > "$outfile" 2>/dev/null || true
+    log_debug "ip.thc.org: $(wc -l < "$outfile" | tr -d ' ') entries"
+}
+
 discover_anubis() {
     local domain="$1" outfile="$2"
     local response
@@ -588,12 +610,13 @@ discover_subdomains() {
     local tmpdir
     tmpdir=$(mktemp -d)
 
-    log_info "[1/3] Discovering subdomains across all sources in parallel..."
+    log_info "[1/4] Discovering subdomains across all sources in parallel..."
     spinner_start "Querying sources"
 
     # Free sources — always run
     discover_certsh       "$domain" "${tmpdir}/certsh.txt"       &
     discover_crtname      "$domain" "${tmpdir}/crtname.txt"       &
+    discover_thc          "$domain" "${tmpdir}/thc.txt"           &
     discover_anubis       "$domain" "${tmpdir}/anubis.txt"        &
     discover_hackertarget "$domain" "${tmpdir}/hackertarget.txt"  &
     discover_alienvault   "$domain" "${tmpdir}/alienvault.txt"    &
@@ -612,7 +635,7 @@ discover_subdomains() {
 
     # Track which sources produced results
     local src
-    for src in certsh crtname anubis hackertarget alienvault bufferover urlscan wayback \
+    for src in certsh crtname thc anubis hackertarget alienvault bufferover urlscan wayback \
                 securitytrails virustotal censys binaryedge; do
         local f="${tmpdir}/${src}.txt"
         if [[ -f "$f" ]] && [[ -s "$f" ]]; then
@@ -648,7 +671,7 @@ resolve_ips() {
 
     local total
     total=$(wc -l < "$subdomains_file" | tr -d ' ')
-    log_info "[2/3] Resolving ${total} subdomains (${THREADS} threads)..."
+    log_info "[2/4] Resolving ${total} subdomains (${THREADS} threads)..."
 
     > "$output_file"
     init_job_pool "$THREADS"
@@ -777,6 +800,63 @@ parse_port_data() {
 }
 
 # ============================================================
+# REVERSE DNS — ip.thc.org (passive, many hostnames per IP)
+# https://ip.thc.org/docs/API/reverse-dns-lookup
+# Output CSV: IP,Hostname,InScope   (InScope=yes if hostname is under target domain)
+# ============================================================
+reverse_dns_lookup() {
+    local ips_file="$1" output_file="$2" domain="$3"
+    local tmpdir counter_file
+    tmpdir=$(mktemp -d)
+    counter_file=$(mktemp)
+
+    local ips total
+    ips=$(cut -d',' -f2 "$ips_file" | sort -u)
+    total=$(printf '%s\n' "$ips" | grep -c . || true)
+    log_info "[3/4] Reverse DNS (ip.thc.org) for ${total} unique IPs (${THREADS} threads)..."
+
+    printf 'IP,Hostname,InScope\n' > "$output_file"
+    init_job_pool "$THREADS"
+
+    local idx=0 ip
+    while IFS= read -r ip; do
+        [[ -z "$ip" ]] && continue
+        local frag="${tmpdir}/rd_${idx}"
+        idx=$(( idx + 1 ))
+        acquire_slot
+        (
+            local response host scope
+            if response=$(curl_with_retry "https://ip.thc.org/${ip}?nocolor=1"); then
+                printf '%s\n' "$response" | extract_hostnames | while IFS= read -r host; do
+                    scope=no
+                    [[ "$host" == "$domain" || "$host" == *".${domain}" ]] && scope=yes
+                    printf '%s,%s,%s\n' "$ip" "$host" "$scope"
+                done > "$frag" 2>/dev/null || true
+            fi
+            printf 'x' >> "$counter_file"
+            if [[ "$QUIET" -eq 0 ]] && [[ -t 2 ]]; then
+                printf '\r\033[K%b[INFO]%b Reverse DNS: %d/%d' "$BLUE" "$NC" \
+                    "$(wc -c < "$counter_file" | tr -d ' ')" "$total" >&2
+            fi
+            sleep "$API_DELAY"
+            release_slot
+        ) &
+    done <<< "$ips"
+
+    wait
+    close_job_pool
+    [[ "$QUIET" -eq 0 ]] && [[ -t 2 ]] && printf '\r\033[K' >&2
+
+    cat "${tmpdir}"/rd_* 2>/dev/null | sort -u >> "$output_file" || true
+    rm -rf "$tmpdir" "$counter_file"
+
+    local n_host n_scope
+    n_host=$(( $(wc -l < "$output_file" | tr -d ' ') - 1 ))
+    n_scope=$(grep -c ',yes$' "$output_file" || true)
+    log_ok "Reverse DNS: ${n_host} hostnames (${n_scope} under ${domain})"
+}
+
+# ============================================================
 # GET PORT INFO — parallel with FIFO semaphore
 # ============================================================
 get_port_info() {
@@ -787,7 +867,7 @@ get_port_info() {
 
     local total
     total=$(wc -l < "$ips_file" | tr -d ' ')
-    log_info "[3/3] Querying port data (InternetDB) for ${total} IPs (${THREADS} threads)..."
+    log_info "[4/4] Querying port data (InternetDB) for ${total} IPs (${THREADS} threads)..."
 
     printf 'Subdomain,IP,Ports,Hostnames,Tags,Vulns,CPEs\n' > "$output_file"
 
@@ -906,7 +986,15 @@ generate_json_output() {
         keys_json=$(printf '%s\n' "${API_KEYS_ACTIVE[@]}" | jq -R '.' | jq -s '.')
     fi
 
+    local rdns_json="[]" rdns_csv="${OUTPUT_DIR}/reverse_dns.csv"
+    if [[ -s "$rdns_csv" ]]; then
+        rdns_json=$(tail -n +2 "$rdns_csv" | jq -R -s '
+            split("\n") | map(select(length > 0) | split(",")
+            | {ip: .[0], hostname: .[1], in_scope: (.[2] == "yes")})' 2>/dev/null || printf '[]')
+    fi
+
     jq -n \
+        --argjson rdns  "$rdns_json" \
         --arg domain    "$domain" \
         --arg timestamp "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
         --argjson duration     "$duration" \
@@ -931,6 +1019,7 @@ generate_json_output() {
                     ips_with_port_data: $ip_with_data
                 }
             },
+            reverse_dns: $rdns,
             results: $results
         }' > "$json_file"
 
@@ -1015,13 +1104,14 @@ ${BOLD}Options:${NC}
   -q, --quiet            Suppress all non-error output
   -p, --proxy URL        HTTP/HTTPS proxy for all outbound requests
   -C, --no-cache         Disable result caching
+  -R, --no-rdns          Skip reverse DNS lookups (ip.thc.org)
   -k, --keys FILE        Path to API keys config file
   -c, --no-color         Disable colored output (also honours NO_COLOR)
   -V, --version          Show version and exit
   -h, --help             Show this help
 
 ${BOLD}Free subdomain sources (always active):${NC}
-  crt.sh, crt.name, AnubisDB, HackerTarget, AlienVault OTX,
+  crt.sh, crt.name, ip.thc.org, AnubisDB, HackerTarget, AlienVault OTX,
   BufferOver, URLScan.io, Wayback Machine CDX
 
 ${BOLD}API-key-enhanced sources (optional):${NC}
@@ -1061,6 +1151,7 @@ parse_args() {
             --quiet)    args+=("-q") ;;
             --proxy)    args+=("-p") ;;
             --no-cache) args+=("-C") ;;
+            --no-rdns)  args+=("-R") ;;
             --no-color) args+=("-c") ;;
             --version)  args+=("-V") ;;
             --keys)     args+=("-k") ;;
@@ -1070,7 +1161,7 @@ parse_args() {
     done
     set -- "${args[@]}"
 
-    while getopts ":o:n:T:d:f:vqp:Cck:hV" opt; do
+    while getopts ":o:n:T:d:f:vqp:CRck:hV" opt; do
         case "$opt" in
             o) OUTPUT_DIR="$OPTARG" ;;
             n) THREADS="$OPTARG" ;;
@@ -1081,6 +1172,7 @@ parse_args() {
             q) QUIET=1 ;;
             p) CURL_PROXY="$OPTARG" ;;
             C) NO_CACHE=1 ;;
+            R) DO_RDNS=0 ;;
             c) disable_colors ;;
             V) printf 'subdomain_scanner.sh %s\n' "$VERSION"; exit 0 ;;
             k) API_KEYS_FILE="$OPTARG" ;;
@@ -1164,13 +1256,20 @@ main() {
         > "$ips_file"
     fi
 
-    # Step 3 — Port data (skip for md-only format)
+    # Step 3 — Reverse DNS via ip.thc.org
+    local rdns_file="${OUTPUT_DIR}/reverse_dns.csv"
+    if [[ -s "$ips_file" ]] && [[ "$DO_RDNS" -eq 1 ]]; then
+        reverse_dns_lookup "$ips_file" "$rdns_file" "$DOMAIN"
+        printf '\n'
+    fi
+
+    # Step 4 — Port data (skip for md-only format)
     if [[ -s "$ips_file" ]] && [[ "$OUTPUT_FORMAT" != "md" ]]; then
         get_port_info "$ips_file" "$ports_file" "$json_tmpdir"
         printf '\n'
     fi
 
-    # Step 4 — Generate requested output formats
+    # Step 5 — Generate requested output formats
     case "$OUTPUT_FORMAT" in
         json)
             generate_json_output "$DOMAIN" "$subdomains_file" "$ips_file" \
@@ -1206,9 +1305,12 @@ main() {
     printf '  %-22s %s\n' "Resolved hosts"     "$n_ip"
     printf '  %-22s %s\n' "Sources with data"  "${#SOURCES_USED[@]}"
     printf '  %-22s %s\n' "Unique CVEs"        "$n_cve"
+    if [[ -f "$rdns_file" ]]; then
+        printf '  %-22s %s\n' "Reverse DNS names" "$(( $(wc -l < "$rdns_file" | tr -d ' ') - 1 ))"
+    fi
     printf '\n%bFiles%b  %s\n' "$BOLD" "$NC" "$OUTPUT_DIR"
     local f
-    for f in subdomains.txt subdomains_with_ips.csv ports_and_services.csv summary.md results.json scan.log; do
+    for f in subdomains.txt subdomains_with_ips.csv reverse_dns.csv ports_and_services.csv summary.md results.json scan.log; do
         [[ -f "${OUTPUT_DIR}/${f}" ]] && printf '  %b•%b %s\n' "$DIM" "$NC" "$f"
     done
     if (( n_cve > 0 )); then

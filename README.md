@@ -10,8 +10,9 @@ Useful when you can't run port scans or DNS brute-forcing.
 
 ## 🚀 Features
 
-- **8 free subdomain sources**, queried in parallel: crt.sh, crt.name, AnubisDB, HackerTarget, AlienVault OTX, BufferOver, URLScan.io, Wayback Machine CDX
+- **9 free subdomain sources**, queried in parallel: crt.sh, crt.name, ip.thc.org, AnubisDB, HackerTarget, AlienVault OTX, BufferOver, URLScan.io, Wayback Machine CDX
 - **Optional key-enhanced sources**: Shodan, SecurityTrails, VirusTotal, Censys, BinaryEdge
+- **Reverse DNS** via [ip.thc.org](https://ip.thc.org/docs/API/reverse-dns-lookup): finds other hostnames on each resolved IP (`reverse_dns.csv`, flags names under the target domain)
 - **DNS resolution** with `dig`, `drill`, `host` or `nslookup` (whichever is installed)
 - **Port, service and CVE data** from Shodan InternetDB (free, no key)
 - **Output formats**: TXT, CSV, Markdown and JSON
@@ -51,6 +52,7 @@ subdomain_scanner.sh [OPTIONS] <domain>
   -q, --quiet            Errors only
   -p, --proxy URL        HTTP/HTTPS proxy for all requests
   -C, --no-cache         Disable result caching
+  -R, --no-rdns          Skip reverse DNS lookups (ip.thc.org)
   -k, --keys FILE        API keys config file
   -c, --no-color         Disable colors (also honours NO_COLOR)
   -V, --version          Show version
@@ -87,6 +89,7 @@ BINARYEDGE_API_KEY=...
 recon_example.com_20260929_143022/
 ├── subdomains.txt              # Unique subdomains
 ├── subdomains_with_ips.csv     # Subdomain → IP mapping
+├── reverse_dns.csv             # Hostnames per IP (ip.thc.org)
 ├── ports_and_services.csv      # Ports, tags and CVEs per IP
 ├── results.json                # Full structured results
 ├── summary.md                  # Human-readable report
@@ -99,8 +102,9 @@ Cache lives in `~/.cache/subdomain_scanner/` (24h TTL, disable with `-C`).
 
 1. **Discover**: queries all sources in parallel and merges the results.
 2. **Resolve**: resolves each subdomain to IPs using the threaded worker pool.
-3. **Enrich**: looks up each IP in Shodan InternetDB for ports, hostnames, tags and CVEs.
-4. **Report**: writes the requested output formats and prints a summary.
+3. **Reverse DNS**: looks up each unique IP on ip.thc.org.
+4. **Enrich**: looks up each IP in Shodan InternetDB for ports, hostnames, tags and CVEs.
+5. **Report**: writes the requested output formats and prints a summary.
 
 ## ⚠️ Rate limits
 
@@ -120,7 +124,7 @@ MIT. See [LICENSE](LICENSE).
 
 ## 🙏 Acknowledgments
 
-[crt.sh](https://crt.sh/), [crt.name](https://crt.name/), [AnubisDB](https://anubisdb.com/), [HackerTarget](https://hackertarget.com/), [AlienVault OTX](https://otx.alienvault.com/), [URLScan.io](https://urlscan.io/), [Wayback Machine](https://web.archive.org/), [Shodan InternetDB](https://internetdb.shodan.io/).
+[crt.sh](https://crt.sh/), [crt.name](https://crt.name/), [ip.thc.org](https://ip.thc.org/), [AnubisDB](https://anubisdb.com/), [HackerTarget](https://hackertarget.com/), [AlienVault OTX](https://otx.alienvault.com/), [URLScan.io](https://urlscan.io/), [Wayback Machine](https://web.archive.org/), [Shodan InternetDB](https://internetdb.shodan.io/).
 
 ## 📞 Support
 
