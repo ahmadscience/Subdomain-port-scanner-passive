@@ -451,16 +451,32 @@ extract_hostnames() {
         | sort -u
 }
 
-# ip.thc.org subdomain lookup (free, no key): https://ip.thc.org/docs/API/subdomain-lookup
+# ip.thc.org subdomain lookup (free, no key, paginated JSON API)
+# https://ip.thc.org/docs/API/subdomain-lookup
+THC_PAGE_LIMIT=500
+THC_MAX_PAGES=20
 discover_thc() {
     local domain="$1" outfile="$2"
-    local response
-    response=$(curl_with_retry "https://ip.thc.org/sb/${domain}?nocolor=1") || { > "$outfile"; return 0; }
-    printf '%s\n' "$response" \
-        | extract_hostnames \
+    local page_state="" page=0 response body
+    > "$outfile"
+    while (( page < THC_MAX_PAGES )); do
+        body=$(jq -n --arg d "$domain" --arg ps "$page_state" --argjson l "$THC_PAGE_LIMIT" \
+            '{domain:$d, page_state:$ps, limit:$l}')
+        response=$(curl_with_retry "https://ip.thc.org/api/v1/lookup/subdomains" \
+            -H 'Content-Type: application/json' -H 'Accept: application/json' \
+            -d "$body") || break
+        printf '%s\n' "$response" | jq -r '.domains[]?.domain // empty' 2>/dev/null >> "$outfile" || break
+        page_state=$(printf '%s\n' "$response" | jq -r '.next_page_state // empty' 2>/dev/null)
+        page=$(( page + 1 ))
+        [[ -z "$page_state" ]] && break
+        sleep "$API_DELAY"
+    done
+    tr 'A-Z' 'a-z' < "$outfile" \
+        | grep -E "^[a-z0-9._-]+$" \
         | grep -E "(^|\.)${domain//./\\.}$" \
-        | sort -u > "$outfile" 2>/dev/null || true
-    log_debug "ip.thc.org: $(wc -l < "$outfile" | tr -d ' ') entries"
+        | sort -u > "${outfile}.tmp" 2>/dev/null || true
+    mv "${outfile}.tmp" "$outfile"
+    log_debug "ip.thc.org: $(wc -l < "$outfile" | tr -d ' ') entries (${page} page(s))"
 }
 
 discover_anubis() {
