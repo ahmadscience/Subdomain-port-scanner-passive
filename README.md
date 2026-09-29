@@ -1,168 +1,131 @@
-
-
 # 🔍 Passive Subdomain Discovery & Port Scanner
 
-A  bash script for passive reconnaissance that combines AnubisDB + certificate transparency logs with Shodan's InternetDB to discover subdomains and enumerate open ports - passive, free and no API keys required!
-A fsat tool for recon when you can not run port scan or brute force sub domains. Feel free to improve this concept.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#-requirements)
+[![Shell](https://img.shields.io/badge/shell-bash-green)](https://www.gnu.org/software/bash/)
+
+A single-file bash tool for **passive** reconnaissance. It gathers subdomains from public certificate-transparency logs and OSINT sources, resolves them, and looks up open ports and known CVEs via Shodan's free InternetDB. **No packets are sent to the target** and no API keys are needed. Keys are optional and unlock extra sources.
+
+Useful when you can't run port scans or DNS brute-forcing.
 
 ## 🚀 Features
 
-- **🔒 Certificate Transparency Discovery**: Uses crt.sh and AnubisDB to find subdomains from SSL certificate logs
-- **🌐 DNS Resolution**: Resolves all discovered subdomains to IP addresses
-- **🔓 Port Enumeration**: Leverages Shodan's free InternetDB for open port discovery
-- **🛡️ Vulnerability Detection**: Identifies known CVEs associated with discovered services
-- **📊 Multiple Output Formats**: CSV, TXT, and Markdown reports
-- **🎯 Zero API Keys**: Completely free - no registration or API keys required
-- **⚡ Apple Silicon Optimized**: Native performance on Apple Silicon M1, M2, M3 and M4
-- **🔧 Dependency Checking**: Automatic validation of required tools
+- **9 free subdomain sources**, queried in parallel: crt.sh, crt.name, ip.thc.org, AnubisDB, HackerTarget, AlienVault OTX, BufferOver, URLScan.io, Wayback Machine CDX
+- **Optional key-enhanced sources**: Shodan, SecurityTrails, VirusTotal, Censys, BinaryEdge
+- **Reverse DNS** via [ip.thc.org](https://ip.thc.org/docs/API/reverse-dns-lookup): finds other hostnames on each resolved IP (`reverse_dns.csv`, flags names under the target domain, with org/ASN/country; up to 300 names per IP)
+- **DNS resolution** with `dig`, `drill`, `host` or `nslookup` (whichever is installed)
+- **Port, service and CVE data** from Shodan InternetDB (free, no key)
+- **Output formats**: TXT, CSV, Markdown and JSON
+- **Result caching** (24h) to spare rate limits, plus proxy support
+- **Clean terminal UI**: numbered steps, a summary block, `NO_COLOR` and `--no-color` support
 
-## 📋 Prerequisites
+## 📋 Requirements
 
-The script automatically checks for dependencies and provides installation instructions:
+`bash` 3.2+, `curl`, `jq`, and one of `dig` / `drill` / `host` / `nslookup`. The script checks for these and prints install hints.
 
-### macOS (via Homebrew)
-```bash
-brew install curl jq bind
-```
-
-### Kali/Ubuntu/Debian
-```bash
-sudo apt-get update
-sudo apt-get install curl jq dnsutils
-```
-
-### CentOS/RHEL
-```bash
-sudo yum install curl jq bind-utils
-```
+| OS | Install |
+|----|---------|
+| macOS | `brew install curl jq bind` |
+| Debian / Ubuntu / Kali | `sudo apt-get install curl jq dnsutils` |
+| RHEL / CentOS / Fedora | `sudo dnf install curl jq bind-utils` |
 
 ## 🛠️ Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/subdomain-port-scanner.git
-cd subdomain-port-scanner
-
-# Confrim Checking dependencies are installed 
-sudo apt-get update
-sudo apt-get install curl jq dnsutils
-
-# Make the script executable
+git clone https://github.com/whatsdd/Subdomain-port-scanner-passive.git
+cd Subdomain-port-scanner-passive
 chmod +x subdomain_scanner.sh
-
-# Run against a target domain
 ./subdomain_scanner.sh example.com
 ```
 
 ## 💻 Usage
 
-### Basic Usage
+```
+subdomain_scanner.sh [OPTIONS] <domain>
+
+  -o, --output DIR       Output directory (default: recon_DOMAIN_TIMESTAMP)
+  -n, --threads N        Parallel worker threads (default: 5)
+  -T, --timeout SECS     curl max-time per request (default: 30)
+  -d, --delay SECS       Delay between port API requests (default: 0.5)
+  -f, --format FORMAT    all | json | csv | md (default: all)
+  -v, --verbose          Debug output
+  -q, --quiet            Errors only
+  -p, --proxy URL        HTTP/HTTPS proxy for all requests
+  -C, --no-cache         Disable result caching
+  -R, --no-rdns          Skip reverse DNS lookups (ip.thc.org)
+  -k, --keys FILE        API keys config file
+  -c, --no-color         Disable colors (also honours NO_COLOR)
+  -V, --version          Show version
+  -h, --help             Show help
+```
+
+Examples:
+
 ```bash
-./subdomain_scanner.sh target.com
+./subdomain_scanner.sh example.com
+./subdomain_scanner.sh -v -n 10 -f json example.com
+./subdomain_scanner.sh -q -o /tmp/scan -f csv example.com
+./subdomain_scanner.sh -p http://127.0.0.1:8080 example.com
 ```
 
-### Example Output Structure
+Any domain works: for crt.name the apex (eTLD+1) is derived automatically (handles `co.uk`-style suffixes) and results are filtered to the requested domain.
+
+### Optional API keys
+
+On first run a template is created at `~/.config/subdomain_scanner/keys.conf`. Uncomment the keys you have:
+
 ```
-recon_20241204_143022/
-├── subdomains.txt              # List of discovered subdomains
-├── subdomains_with_ips.csv     # Subdomains with resolved IPs
-├── ports_and_services.csv      # Port and vulnerability data
-└── summary.md                  # Executive summary report
-```
-
-### Sample Results
-```bash
-$ ./subdomain_scanner.sh example.com
-
-[INFO] Starting reconnaissance for domain: example.com
-[SUCCESS] Found 23 subdomains
-[SUCCESS] Resolved 18 subdomains to IP addresses
-[INFO] Checking 1.2.3.4 (api.example.com)...
-  Open ports: 22,80,443
-[WARNING] Vulnerabilities found: CVE-2021-44228
-[SUCCESS] Reconnaissance complete!
-
-Quick Stats:
-  Subdomains: 23
-  Resolved IPs: 18
-  IPs with port data: 15
+SHODAN_API_KEY=...
+SECURITYTRAILS_API_KEY=...
+VIRUSTOTAL_API_KEY=...
+CENSYS_API_ID=...
+CENSYS_API_SECRET=...
+BINARYEDGE_API_KEY=...
 ```
 
-## 📊 Output Files
+## 📊 Output
 
-| File | Description |
-|------|-------------|
-| `subdomains.txt` | Raw list of discovered subdomains |
-| `subdomains_with_ips.csv` | Subdomain to IP mapping |
-| `ports_and_services.csv` | Comprehensive port and vulnerability data |
-| `summary.md` | Human-readable summary report |
+```
+recon_example.com_20260929_143022/
+├── subdomains.txt              # Unique subdomains
+├── subdomains_with_ips.csv     # Subdomain → IP mapping
+├── reverse_dns.csv             # Hostnames per IP + org/ASN/country (ip.thc.org)
+├── ports_and_services.csv      # Ports, tags and CVEs per IP
+├── results.json                # Full structured results
+├── summary.md                  # Human-readable report
+└── scan.log                    # Run log
+```
+
+Cache lives in `~/.cache/subdomain_scanner/` (24h TTL, disable with `-C`).
 
 ## 🔧 How It Works
 
-1. **Certificate Transparency**: Queries crt.sh for SSL certificate logs
-2. **DNS Resolution**: Uses `dig` to resolve subdomains to IP addresses
-3. **Port Discovery**: Leverages Shodan InternetDB for passive port enumeration
-4. **Data Enrichment**: Extracts hostnames, service tags, and vulnerability data
-5. **Report Generation**: Creates multiple output formats for different use cases
+1. **Discover**: queries all sources in parallel and merges the results.
+2. **Resolve**: resolves each subdomain to IPs using the threaded worker pool.
+3. **Reverse DNS**: looks up each unique IP on ip.thc.org.
+4. **Enrich**: looks up each IP in Shodan InternetDB for ports, hostnames, tags and CVEs.
+5. **Report**: writes the requested output formats and prints a summary.
 
-## 🌟 Key Advantages
+## ⚠️ Rate limits
 
-- **💰 100% Free**: No API keys, subscriptions, or rate limits
-- **🔒 Passive Reconnaissance**: Only uses publicly available data
-- **⚡ Fast & Efficient**: Concurrent processing with intelligent delays
-- **📈 Comprehensive**: Combines multiple data sources for complete coverage
-- **🛡️ Security Focused**: Highlights vulnerabilities and security issues
-- **📱 Cross-Platform**: Works on macOS, Linux, and WSL
+Free sources apply their own limits (crt.name allows 100 requests per IP per day; HackerTarget's free tier is also small). The cache and `--delay` help. A source that fails or is rate-limited is skipped, and the rest still run.
 
 ## 🤝 Contributing
 
-Contributions are welcome! Here's how you can help:
-
-1. 🍴 Fork the repository
-2. 🌟 Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. 💻 Commit your changes (`git commit -m 'Add amazing feature'`)
-4. 📤 Push to the branch (`git push origin feature/amazing-feature`)
-5. 🔄 Open a Pull Request
-
-### Ideas for Contributions
-- [ ] Add subdomain enumeration sources
-- [ ] DNS brute-force functionality
-- [ ] JSON output format
-- [ ] Integration with other passive reconnaissance tools
-- [ ] Docker containerization
-- [ ] GitHub Actions for automated scanning
+Fork, branch, commit, open a PR. Ideas: DNS brute-force mode, Docker image, CI with ShellCheck, more sources.
 
 ## ⚠️ Legal Disclaimer
 
-This tool is intended for authorized security testing and educational purposes only. Users are responsible for ensuring they have proper authorization before scanning any targets. The authors are not responsible for any misuse or damage caused by this tool.
-
-**Always ensure you have explicit permission before scanning domains you don't own.**
+For authorized security testing and education only. Get explicit permission before assessing domains you don't own. The authors accept no liability for misuse.
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT. See [LICENSE](LICENSE).
 
 ## 🙏 Acknowledgments
 
-- [crt.sh](https://crt.sh/) - Certificate Transparency log search
-- [Shodan InternetDB](https://internetdb.shodan.io/) - Free passive reconnaissance data
-- The cybersecurity community for continuous knowledge sharing
+[crt.sh](https://crt.sh/), [crt.name](https://crt.name/), [ip.thc.org](https://ip.thc.org/), [AnubisDB](https://anubisdb.com/), [HackerTarget](https://hackertarget.com/), [AlienVault OTX](https://otx.alienvault.com/), [URLScan.io](https://urlscan.io/), [Wayback Machine](https://web.archive.org/), [Shodan InternetDB](https://internetdb.shodan.io/).
 
 ## 📞 Support
 
-- 🐛 **Issues**: [GitHub Issues](https://github.com/whatsdd/Subdomain-port-scanner-passive/issues)
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/whatsdd/Subdomain-port-scanner-passive/discussions)
-- 📧 **Email**: find me on LinkedIn
-- 📧 **Homepage**: [Ahmad.science my homepage](https://ahmad.science/) 
-
-## ⭐ Star History
-
-If you find this tool useful, please consider giving it a star! ⭐
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](https://github.com/yourusername/subdomain-port-scanner)
-[![Shell](https://img.shields.io/badge/shell-bash-green)](https://www.gnu.org/software/bash/)
-
-
----
-
-**Made with ❤️ for the cybersecurity community**
+[Issues](https://github.com/whatsdd/Subdomain-port-scanner-passive/issues) · [Homepage](https://ahmad.science/)
