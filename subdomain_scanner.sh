@@ -412,16 +412,33 @@ discover_certsh() {
     log_debug "crt.sh: $(wc -l < "$outfile" | tr -d ' ') entries"
 }
 
+# Best-effort eTLD+1 (crt.name requires an apex). Handles common 2-level TLDs
+# like co.uk / com.au; for anything exotic pass the registrable domain directly.
+get_apex() {
+    local d="$1"
+    printf '%s\n' "$d" | awk -F. '{
+        n = NF
+        if (n <= 2) { print $0; exit }
+        if (length($n) == 2 && $(n-1) ~ /^(co|com|org|net|gov|edu|ac|or|ne|go)$/ && n >= 3)
+            print $(n-2) "." $(n-1) "." $n
+        else
+            print $(n-1) "." $n
+    }'
+}
+
 discover_crtname() {
     local domain="$1" outfile="$2"
-    local response
-    response=$(curl_with_retry "https://crt.name/v1/search?apex=${domain}") || { > "$outfile"; return 0; }
+    local apex response
+    apex=$(get_apex "$domain")
+    response=$(curl_with_retry "https://crt.name/v1/search?apex=${apex}") || { > "$outfile"; return 0; }
+    # Keep only hosts under the requested domain (drops junk like u003e… prefixes)
     printf '%s\n' "$response" \
         | tr 'A-Z' 'a-z' \
         | grep -E "^[a-z0-9._-]+$" \
-        | grep -v '^u003e' \
+        | grep -E "(^|\.)${domain//./\\.}$" \
+        | grep -v "^u003e" \
         | sort -u > "$outfile" 2>/dev/null || true
-    log_debug "crt.name: $(wc -l < "$outfile" | tr -d ' ') entries"
+    log_debug "crt.name (apex ${apex}): $(wc -l < "$outfile" | tr -d ' ') entries"
 }
 
 discover_anubis() {

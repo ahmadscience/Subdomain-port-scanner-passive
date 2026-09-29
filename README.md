@@ -66,7 +66,7 @@ Examples:
 ./subdomain_scanner.sh -p http://127.0.0.1:8080 example.com
 ```
 
-Pass the registrable domain (eTLD+1, e.g. `example.com`). Some sources, including crt.name, expect that form.
+Any domain works: for crt.name the apex (eTLD+1) is derived automatically (handles `co.uk`-style suffixes) and results are filtered to the requested domain.
 
 ### Optional API keys
 
