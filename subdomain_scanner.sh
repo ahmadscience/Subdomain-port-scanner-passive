@@ -442,15 +442,6 @@ discover_crtname() {
     log_debug "crt.name (apex ${apex}): $(wc -l < "$outfile" | tr -d ' ') entries"
 }
 
-# Extract hostnames from arbitrary text (robust to THC's text layout)
-extract_hostnames() {
-    sed $'s/\033\\[[0-9;]*m//g' \
-        | tr 'A-Z' 'a-z' \
-        | grep -oE '[a-z0-9]([a-z0-9_-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9_-]*[a-z0-9])?)+' \
-        | grep -E '\.[a-z]{2,}$' \
-        | sort -u
-}
-
 # ip.thc.org subdomain lookup (free, no key, paginated JSON API)
 # https://ip.thc.org/docs/API/subdomain-lookup
 THC_PAGE_LIMIT=500
@@ -818,8 +809,33 @@ parse_port_data() {
 # ============================================================
 # REVERSE DNS — ip.thc.org (passive, many hostnames per IP)
 # https://ip.thc.org/docs/API/reverse-dns-lookup
-# Output CSV: IP,Hostname,InScope   (InScope=yes if hostname is under target domain)
+# Output CSV: IP,Hostname,InScope,Organization,ASN,Country   (InScope=yes if hostname is under target domain)
 # ============================================================
+# One IP -> CSV lines: IP,Hostname,InScope,Org,ASN,Country (paginated JSON API)
+THC_RDNS_LIMIT=100
+THC_RDNS_MAX_PAGES=3
+thc_rdns_ip() {
+    local ip="$1" domain="$2"
+    local page_state="" page=0 body response
+    while (( page < THC_RDNS_MAX_PAGES )); do
+        body=$(jq -n --arg ip "$ip" --arg ps "$page_state" --argjson l "$THC_RDNS_LIMIT" \
+            '{ip_address:$ip, tld:[], apex_domain:"", page_state:$ps, limit:$l}')
+        response=$(curl_with_retry "https://ip.thc.org/api/v1/lookup" \
+            -H 'Content-Type: application/json' -H 'Accept: application/json' \
+            -d "$body") || return 0
+        printf '%s\n' "$response" | jq -r --arg ip "$ip" --arg d "$domain" '
+            .domains[]? | select(.domain != null)
+            | (.domain | ascii_downcase) as $h
+            | [$ip, $h,
+               (if ($h == $d or ($h | endswith("." + $d))) then "yes" else "no" end),
+               ((.organization // "") | gsub("[,\n]"; " ")),
+               (.asn // ""), (.country // "")] | join(",")' 2>/dev/null || return 0
+        page_state=$(printf '%s\n' "$response" | jq -r '.next_page_state // empty' 2>/dev/null)
+        page=$(( page + 1 ))
+        [[ -z "$page_state" ]] && break
+    done
+}
+
 reverse_dns_lookup() {
     local ips_file="$1" output_file="$2" domain="$3"
     local tmpdir counter_file
@@ -831,7 +847,7 @@ reverse_dns_lookup() {
     total=$(printf '%s\n' "$ips" | grep -c . || true)
     log_info "[3/4] Reverse DNS (ip.thc.org) for ${total} unique IPs (${THREADS} threads)..."
 
-    printf 'IP,Hostname,InScope\n' > "$output_file"
+    printf 'IP,Hostname,InScope,Organization,ASN,Country\n' > "$output_file"
     init_job_pool "$THREADS"
 
     local idx=0 ip
@@ -841,14 +857,7 @@ reverse_dns_lookup() {
         idx=$(( idx + 1 ))
         acquire_slot
         (
-            local response host scope
-            if response=$(curl_with_retry "https://ip.thc.org/${ip}?nocolor=1"); then
-                printf '%s\n' "$response" | extract_hostnames | while IFS= read -r host; do
-                    scope=no
-                    [[ "$host" == "$domain" || "$host" == *".${domain}" ]] && scope=yes
-                    printf '%s,%s,%s\n' "$ip" "$host" "$scope"
-                done > "$frag" 2>/dev/null || true
-            fi
+            thc_rdns_ip "$ip" "$domain" > "$frag" 2>/dev/null || true
             printf 'x' >> "$counter_file"
             if [[ "$QUIET" -eq 0 ]] && [[ -t 2 ]]; then
                 printf '\r\033[K%b[INFO]%b Reverse DNS: %d/%d' "$BLUE" "$NC" \
@@ -1006,7 +1015,7 @@ generate_json_output() {
     if [[ -s "$rdns_csv" ]]; then
         rdns_json=$(tail -n +2 "$rdns_csv" | jq -R -s '
             split("\n") | map(select(length > 0) | split(",")
-            | {ip: .[0], hostname: .[1], in_scope: (.[2] == "yes")})' 2>/dev/null || printf '[]')
+            | {ip: .[0], hostname: .[1], in_scope: (.[2] == "yes"), organization: .[3], asn: .[4], country: .[5]})' 2>/dev/null || printf '[]')
     fi
 
     jq -n \
